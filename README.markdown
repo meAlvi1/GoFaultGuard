@@ -89,17 +89,7 @@ print(response.json())  # {"result": "response-data"}
    - Failure and retry rates (`circuit_breaker_failures_total`, `circuit_breaker_retries_total`).
    - Latency histograms (`circuit_breaker_latency_seconds`).
 
-## Project Structure
 
-```
-gofaultguard/
-├── circuitbreaker/   # Core circuit breaker logic
-│   └── circuitbreaker.go
-├── main.go           # REST API server
-├── Dockerfile        # Containerization
-├── go.mod            # Dependencies
-└── README.md         # This file
-```
 
 ## Metrics
 
@@ -112,6 +102,7 @@ gofaultguard/
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request on [GitHub](https://github.com/meAlvi1/GoFaultGuard).
+Email: Arifaizan.fa@gmail.com
 
 ## License
 
