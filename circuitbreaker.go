@@ -69,7 +69,11 @@ func NewCircuitBreaker(config Config) (*CircuitBreaker, error) {
 			Help: "Total successful fallback responses",
 		}, []string{"service"}),
 	}
-	prometheus.MustRegister(metrics.State, metrics.Failures, metrics.Retries, metrics.Latency, metrics.FallbackSuccess)
+	_ = prometheus.Register(metrics.State)
+	_ = prometheus.Register(metrics.Failures)
+	_ = prometheus.Register(metrics.Retries)
+	_ = prometheus.Register(metrics.Latency)
+	_ = prometheus.Register(metrics.FallbackSuccess)
 
 	// Initialize SQLite fallback database
 	db, err := sql.Open("sqlite3", config.FallbackDBPath)
@@ -143,9 +147,9 @@ func (c *CircuitBreaker) Execute(ctx context.Context, key string, fn func() (str
 	// Store result in fallback if successful
 	result, err := fn()
 	if err == nil {
-		_, err = c.db.Exec("INSERT OR REPLACE INTO fallback_data (key, value) VALUES (?, ?)", key, result)
-		if err != nil {
-			log.Printf("Failed to store fallback: %v", err)
+		_, dbErr = c.db.Exec("INSERT OR REPLACE INTO fallback_data (key, value) VALUES (?, ?)", key, result)
+		if dbErr != nil {
+			log.Printf("Failed to store fallback: %v", dbErr)
 		}
 		c.metrics.Latency.WithLabelValues(c.config.ServiceName).Observe(time.Since(start).Seconds())
 		return result, nil
