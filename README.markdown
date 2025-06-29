@@ -111,7 +111,7 @@ gofaultguard/
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or submit a pull request on [GitHub](https://github.com/yourusername/gofaultguard).
+Contributions are welcome! Please open an issue or submit a pull request on [GitHub](https://github.com/meAlvi1/GoFaultGuard).
 
 ## License
 
