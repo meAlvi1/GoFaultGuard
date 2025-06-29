@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/valyala/fasthttp"
-	"yourmodule/circuitbreaker"
+	"godefaultguard/circuitbreaker"
 )
 
 // APIHandler handles REST requests for circuit breaker
@@ -40,12 +40,18 @@ func (h *APIHandler) HandleRequest(ctx *fasthttp.RequestCtx) {
 
 	result, err := h.cb.Execute(context.Background(), req.Key, func() (string, error) {
 		// Simulate external service call
-		reqCtx := fasthttp.RequestCtx{}
-		reqCtx.Request.SetRequestURI(req.URL)
-		if err := fasthttp.Do(&reqCtx.Request, &reqCtx.Response); err != nil {
+		reqOut := fasthttp.AcquireRequest()
+		respOut := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseRequest(reqOut)
+		defer fasthttp.ReleaseResponse(respOut)
+
+		reqOut.SetRequestURI(req.URL)
+		reqOut.Header.SetMethod("GET")
+
+		if err := fasthttp.Do(reqOut, respOut); err != nil {
 			return "", err
 		}
-		return string(reqCtx.Response.Body()), nil
+		return string(respOut.Body()), nil
 	})
 
 	if err != nil {
