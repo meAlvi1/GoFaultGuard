@@ -115,4 +115,4 @@ Contributions are welcome! Please open an issue or submit a pull request on [Git
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](https://github.com/meAlvi1/GoFaultGuard/blob/main/LICENSE) for details.
