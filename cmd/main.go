@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/valyala/fasthttp"
-	"godefaultguard/circuitbreaker"
+	"github.com/meAlvi1/GoFaultGuard/circuitbreaker"
 )
 
 // APIHandler handles REST requests for circuit breaker

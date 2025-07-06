@@ -1,0 +1,62 @@
+package circuitbreaker
+
+import (
+
+mv "/workspaces/GoFaultGuard project/GoFaultGuard/circuitbreaker/circuitbreaker_state_test"
+    "context"
+    "os"
+    "strings"
+    "testing"
+    "time"
+)
+
+func testConfigState() Config {
+    return Config{
+        MaxFailures:    2,
+        Timeout:        1 * time.Second,
+        MaxRetries:     1,
+        RetryBackoff:   10 * time.Millisecond,
+        FallbackDBPath: "test_fallback_state.db",
+        ServiceName:    "test_service",
+        MaxRequests:    1,
+    }
+}
+
+func cleanupDBState(path string) {
+    os.Remove(path)
+}
+
+var alwaysFailState = func() (string, error) { return "", assertErr }
+var alwaysOKState = func() (string, error) { return "ok", nil }
+
+type testErrState struct{}
+
+func (e *testErrState) Error() string { return "fail" }
+
+var assertErr = &testErrState{}
+
+func TestCircuitBreaker_StateTransitions(t *testing.T) {
+    cfg := testConfigState()
+    defer cleanupDBState(cfg.FallbackDBPath)
+    cb, err := NewCircuitBreaker(cfg)
+    if err != nil {
+        t.Fatalf("failed to create circuit breaker: %v", err)
+    }
+    defer cb.Close()
+    ctx := context.Background()
+
+    _, err = cb.Execute(ctx, "cb_state", alwaysOKState)
+    if err != nil {
+        t.Fatalf("expected success, got %v", err)
+    }
+
+    for i := 0; i < int(cfg.MaxFailures); i++ {
+        cb.Execute(ctx, "cb_state", alwaysFailState)
+    }
+    cb.Execute(ctx, "cb_state", alwaysFailState)
+
+    _, err = cb.Execute(ctx, "cb_state", alwaysFailState)
+    if err == nil || !strings.Contains(err.Error(), "no fallback") {
+        t.Fatalf("expected open breaker and fallback error, got %v", err)
+    }
+}
