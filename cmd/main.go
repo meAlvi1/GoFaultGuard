@@ -2,88 +2,51 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"time"
 
-	"github.com/valyala/fasthttp"
 	"github.com/meAlvi1/GoFaultGuard/circuitbreaker"
 )
 
-// APIHandler handles REST requests for circuit breaker
-type APIHandler struct {
-	cb *circuitbreaker.CircuitBreaker
-}
-
-// NewAPIHandler creates a new API handler
-func NewAPIHandler(cb *circuitbreaker.CircuitBreaker) *APIHandler {
-	return &APIHandler{cb: cb}
-}
-
-// HandleRequest processes API requests
-func (h *APIHandler) HandleRequest(ctx *fasthttp.RequestCtx) {
-	if string(ctx.Path()) != "/execute" || string(ctx.Method()) != "POST" {
-		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		return
-	}
-
-	var req struct {
-		Key string `json:"key"`
-		URL string `json:"url"`
-	}
-	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		ctx.WriteString(err.Error())
-		return
-	}
-
-	result, err := h.cb.Execute(context.Background(), req.Key, func() (string, error) {
-		// Simulate external service call
-		reqOut := fasthttp.AcquireRequest()
-		respOut := fasthttp.AcquireResponse()
-		defer fasthttp.ReleaseRequest(reqOut)
-		defer fasthttp.ReleaseResponse(respOut)
-
-		reqOut.SetRequestURI(req.URL)
-		reqOut.Header.SetMethod("GET")
-
-		if err := fasthttp.Do(reqOut, respOut); err != nil {
-			return "", err
-		}
-		return string(respOut.Body()), nil
-	})
-
-	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		ctx.WriteString(err.Error())
-		return
-	}
-
-	ctx.SetContentType("application/json")
-	ctx.WriteString(fmt.Sprintf(`{"result": "%s"}`, result))
-}
-
 func main() {
-	config := circuitbreaker.Config{
-		MaxFailures:    5,
+	cfg := circuitbreaker.Config{
+		MaxFailures:    2,
 		Timeout:        2 * time.Second,
-		MaxRetries:     3,
+		MaxRetries:     1,
 		RetryBackoff:   100 * time.Millisecond,
-		FallbackDBPath: "./fallback.db",
-		ServiceName:    "external_service",
+		FallbackDBPath: "fallback_demo.db",
+		ServiceName:    "demo_service",
+		MaxRequests:    1,
+		Interval:       1 * time.Second,
 	}
 
-	cb, err := circuitbreaker.NewCircuitBreaker(config)
+	cb, err := circuitbreaker.NewCircuitBreaker(cfg)
 	if err != nil {
-		log.Fatalf("Failed to initialize circuit breaker: %v", err)
+		log.Fatalf("Failed to create circuit breaker: %v", err)
 	}
 	defer cb.Close()
 
-	// Start Prometheus metrics server
-	go cb.StartMetricsServer(":9090")
+	// Start Prometheus metrics server in background
+	go cb.StartMetricsServer(":8080")
+	fmt.Println("Prometheus metrics available at http://localhost:8080/metrics")
 
-	// Start REST API server
-	handler := NewAPIHandler(cb)
-	log.Fatal(fasthttp.ListenAndServe(":8080", handler.HandleRequest))
+	ctx := context.Background()
+	key := "demo_key"
+
+	// Simulate a successful call
+	result, err := cb.Execute(ctx, key, func() (string, error) {
+		return "Hello, world!", nil
+	})
+	fmt.Printf("First call result: %v, err: %v\n", result, err)
+
+	// Simulate a failing call (to trigger fallback)
+	result, err = cb.Execute(ctx, key, func() (string, error) {
+		return "", fmt.Errorf("simulated failure")
+	})
+	fmt.Printf("Second call (should fallback) result: %v, err: %v\n", result, err)
+
+	// Wait so you can visit /metrics
+	fmt.Println("Press Ctrl+C to exit...")
+	select {}
 }

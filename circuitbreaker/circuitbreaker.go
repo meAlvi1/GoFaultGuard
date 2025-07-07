@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -12,8 +13,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sony/gobreaker"
-	"github.com/valyala/fasthttp"
-	"github.com/valyala/fasthttp/fasthttpadaptor"
 )
 
 // Metrics holds Prometheus metrics for the circuit breaker
@@ -34,6 +33,7 @@ type Config struct {
 	FallbackDBPath string        // Path to SQLite fallback database
 	ServiceName    string        // Service name for metrics
 	MaxRequests    uint32        // Allowed requests in half-open state
+	Interval       time.Duration // Time before transitioning from Open to Half-Open
 }
 
 // CircuitBreaker wraps gobreaker with retries and fallback
@@ -47,6 +47,7 @@ type CircuitBreaker struct {
 
 // NewCircuitBreaker initializes the circuit breaker with metrics and fallback
 func NewCircuitBreaker(config Config) (*CircuitBreaker, error) {
+	// Initialize Prometheus metrics
 	metrics := Metrics{
 		State: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "circuit_breaker_state",
@@ -70,27 +71,27 @@ func NewCircuitBreaker(config Config) (*CircuitBreaker, error) {
 			Help: "Total successful fallback responses",
 		}, []string{"service"}),
 	}
-	// Register metrics and handle errors
+
+	// Register metrics safely
 	for _, collector := range []prometheus.Collector{
 		metrics.State, metrics.Failures, metrics.Retries, metrics.Latency, metrics.FallbackSuccess,
 	} {
 		if err := prometheus.Register(collector); err != nil {
-			if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
-				collector = are.ExistingCollector
-			} else {
-				return nil, fmt.Errorf("failed to register prometheus metric: %w", err)
+			if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
+				return nil, fmt.Errorf("failed to register prometheus metric: %v", err)
 			}
 		}
 	}
 
-	// Initialize SQLite fallback database
+	// Initialize SQLite database
 	db, err := sql.Open("sqlite3", config.FallbackDBPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open fallback database: %w", err)
+		return nil, fmt.Errorf("failed to open fallback database: %v", err)
 	}
 	_, err = db.Exec("CREATE TABLE IF NOT EXISTS fallback_data (key TEXT PRIMARY KEY, value TEXT)")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create fallback table: %w", err)
+		db.Close()
+		return nil, fmt.Errorf("failed to create fallback table: %v", err)
 	}
 
 	// Initialize circuit breaker
@@ -98,6 +99,7 @@ func NewCircuitBreaker(config Config) (*CircuitBreaker, error) {
 		Name:        config.ServiceName,
 		MaxRequests: config.MaxRequests,
 		Timeout:     config.Timeout,
+		Interval:    config.Interval,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
 			return counts.ConsecutiveFailures >= config.MaxFailures
 		},
@@ -125,52 +127,60 @@ func (c *CircuitBreaker) Execute(ctx context.Context, key string, fn func() (str
 	start := time.Now()
 	var lastErr error
 
-	// Retry logic with exponential backoff
 	for i := 0; i <= c.config.MaxRetries; i++ {
 		result, err := c.cb.Execute(func() (interface{}, error) {
-			return fn()
+			r, e := fn()
+			fmt.Printf("Execute: fn returned result=%v, err=%v\n", r, e)
+			return r, e
 		})
+		fmt.Printf("gobreaker.Execute returned result=%v, err=%v, state=%v\n", result, err, c.cb.State().String())
 		if err == nil {
 			c.metrics.Latency.WithLabelValues(c.config.ServiceName).Observe(time.Since(start).Seconds())
-			// Store result in fallback if successful
 			c.mu.Lock()
 			_, dbErr := c.db.ExecContext(ctx, "INSERT OR REPLACE INTO fallback_data (key, value) VALUES (?, ?)", key, result.(string))
 			c.mu.Unlock()
 			if dbErr != nil {
-				log.Printf("Failed to store fallback: %v", dbErr)
+				fmt.Printf("Failed to store fallback: %v\n", dbErr)
 			}
 			return result.(string), nil
 		}
 		lastErr = err
 		c.metrics.Failures.WithLabelValues(c.config.ServiceName).Inc()
-		c.metrics.Retries.WithLabelValues(c.config.ServiceName).Inc()
 		if i < c.config.MaxRetries {
-			time.Sleep(c.config.RetryBackoff * time.Duration(1<<uint(i)))
+			c.metrics.Retries.WithLabelValues(c.config.ServiceName).Inc()
+			select {
+			case <-time.After(c.config.RetryBackoff * time.Duration(1<<uint(i))):
+			case <-ctx.Done():
+				return "", fmt.Errorf("context cancelled: %v", ctx.Err())
+			}
 		}
 	}
 
-	// Fallback to SQLite
+	// Try fallback
 	c.mu.Lock()
 	var value string
 	err := c.db.QueryRowContext(ctx, "SELECT value FROM fallback_data WHERE key = ?", key).Scan(&value)
 	c.mu.Unlock()
+	fmt.Printf("Fallback query for key=%s returned value=%s, err=%v\n", key, value, err)
 	if err == nil {
 		c.metrics.FallbackSuccess.WithLabelValues(c.config.ServiceName).Inc()
 		return value, nil
 	}
 
-	return "", fmt.Errorf("circuit breaker tripped and no fallback available: %w", lastErr)
+	return "", fmt.Errorf("circuit breaker tripped and no fallback available: %v", lastErr)
 }
 
 // StartMetricsServer starts a Prometheus metrics endpoint
 func (c *CircuitBreaker) StartMetricsServer(addr string) {
-	handler := promhttp.Handler()
-	if err := fasthttp.ListenAndServe(addr, fasthttpadaptor.NewFastHTTPHandler(handler)); err != nil {
+	http.Handle("/metrics", promhttp.Handler())
+	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Printf("metrics server error: %v", err)
 	}
 }
 
 // Close shuts down the circuit breaker
 func (c *CircuitBreaker) Close() {
-	c.db.Close()
+	if err := c.db.Close(); err != nil {
+		log.Printf("Failed to close database: %v", err)
+	}
 }
